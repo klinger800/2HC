@@ -86,10 +86,20 @@
     }
     .btn.ghost { background: transparent; }
     .btn.danger { color: var(--bad); border-color: #5a3a32; }
-    .tabs {
-      display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px;
-      margin: 0 0 10px; scrollbar-width: thin; -webkit-overflow-scrolling: touch;
+    .cloud {
+      display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+      margin: 0 0 10px; padding: 8px; border: 1px solid var(--line);
+      border-radius: 12px; background: #1a1612;
     }
+    .cloud input {
+      background: var(--input); border: 1px solid var(--line); color: var(--text);
+      border-radius: 8px; padding: 6px 8px; min-height: 32px; font-size: 16px;
+    }
+    .cloud input.code { width: 11rem; font-family: ui-monospace, monospace; font-size: 13px; }
+    .cloud input.email { width: min(100%, 16rem); }
+    .cloud-status { color: var(--muted); font-size: .75rem; }
+    .cloud-status.ok { color: var(--good); }
+    .cloud-status.bad { color: var(--bad); }
     .tab {
       flex: none;
       border: 1px solid var(--line);
@@ -273,8 +283,9 @@
     </header>
 
     <nav class="tabs" id="tabs"></nav>
+    <section class="cloud" id="cloudBar"></section>
     <main id="main"></main>
-    <p class="save-note"><span class="status-dot"></span>Autosaves on this device. Use Export/Import to move data between phone, tablet, and computer.</p>
+    <p class="save-note"><span class="status-dot"></span>Cloud saves the log for every device that has the sync code. The code is the password — don’t post it publicly.</p>
   </div>
 
   <div class="toast" id="toast"></div>
@@ -293,6 +304,8 @@
 
   <script>
     const STORAGE_KEY = "twohand-lvl1-tracker-v1";
+    const CLOUD_KEY = "twohand-lvl1-cloud-v1";
+    const CLOUD_BASE = "https://kvdb.io";
     const DEFAULT_EXERCISES = [
       "Balance Squat",
       "Side-to-Side Swing",
@@ -354,9 +367,117 @@
     }
 
     let state = loadState();
+    let cloud = loadCloud();
+    let applyingRemote = false;
+    let dirty = false;
+    let pushTimer = null;
+
+    function loadCloud() {
+      try { return JSON.parse(localStorage.getItem(CLOUD_KEY)) || {}; }
+      catch { return {}; }
+    }
+    function saveCloudMeta() {
+      localStorage.setItem(CLOUD_KEY, JSON.stringify(cloud));
+    }
+    function setCloudStatus(msg, kind) {
+      const el = document.getElementById("cloudStatus");
+      if (!el) return;
+      el.textContent = msg;
+      el.className = "cloud-status" + (kind ? " " + kind : "");
+    }
 
     function saveState() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      if (!applyingRemote && cloud.bucket) {
+        dirty = true;
+        clearTimeout(pushTimer);
+        pushTimer = setTimeout(() => pushCloud().catch(err => setCloudStatus(err.message || "Cloud save failed", "bad")), 700);
+      }
+    }
+
+    function cloudPayload() {
+      return {
+        updatedAt: new Date().toISOString(),
+        title: state.title,
+        active: state.active,
+        workouts: state.workouts
+      };
+    }
+
+    async function pushCloud() {
+      if (!cloud.bucket) return;
+      setCloudStatus("Saving…");
+      const data = cloudPayload();
+      const res = await fetch(CLOUD_BASE + "/" + cloud.bucket + "/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data)
+      });
+      if (!res.ok) throw new Error((await res.text()) || "Cloud save failed");
+      state.updatedAt = data.updatedAt;
+      dirty = false;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      setCloudStatus("Saved to cloud", "ok");
+    }
+
+    function applyRemote(data) {
+      if (!data || !data.workouts) return false;
+      applyingRemote = true;
+      const active = state.active;
+      state = {
+        title: data.title || "2H Level 1",
+        active: data.workouts.some(w => w.id === active) ? active : (data.active || "progress"),
+        workouts: data.workouts,
+        updatedAt: data.updatedAt || ""
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      render();
+      applyingRemote = false;
+      dirty = false;
+      return true;
+    }
+
+    async function pullCloud(force) {
+      if (!cloud.bucket || applyingRemote) return;
+      if (!force && dirty) return;
+      if (!force && document.activeElement && document.activeElement.closest("main, .meta, table")) return;
+      const res = await fetch(CLOUD_BASE + "/" + cloud.bucket + "/log");
+      if (res.status === 404) return;
+      if (!res.ok) throw new Error((await res.text()) || "Cloud read failed");
+      const data = await res.json();
+      if (!force && state.updatedAt && data.updatedAt && data.updatedAt <= state.updatedAt) return;
+      if (applyRemote(data)) setCloudStatus("Updated from cloud", "ok");
+    }
+
+    async function startCloud(email) {
+      setCloudStatus("Creating cloud log…");
+      const secret = uid() + uid();
+      const body = new URLSearchParams({ email, default_ttl: "315360000", secret_key: secret });
+      const res = await fetch(CLOUD_BASE, { method: "POST", body });
+      const text = (await res.text()).trim();
+      if (!res.ok || text.length < 8 || text.includes(" ")) throw new Error(text || "Could not create cloud log");
+      cloud = { bucket: text, email, secret };
+      saveCloudMeta();
+      if (location.hash !== "#" + text) history.replaceState(null, "", "#" + text);
+      await pushCloud();
+      renderCloud();
+      toast("Cloud log created");
+    }
+
+    async function connectCloud(code) {
+      const bucket = String(code || "").trim().replace(/^#/, "");
+      if (!bucket) return;
+      setCloudStatus("Connecting…");
+      const res = await fetch(CLOUD_BASE + "/" + bucket + "/log");
+      if (res.status === 404) throw new Error("No log on that code yet");
+      if (!res.ok) throw new Error((await res.text()) || "Could not connect");
+      const data = await res.json();
+      cloud = { bucket };
+      saveCloudMeta();
+      if (location.hash !== "#" + bucket) history.replaceState(null, "", "#" + bucket);
+      applyRemote(data);
+      setCloudStatus("Connected", "ok");
+      toast("Connected to cloud log");
     }
 
     function num(v) {
@@ -574,8 +695,30 @@
       `;
     }
 
+    function renderCloud() {
+      const bar = document.getElementById("cloudBar");
+      if (!bar) return;
+      if (cloud.bucket) {
+        bar.innerHTML = `
+          <span class="cloud-status ok" id="cloudStatus">Cloud on</span>
+          <input class="code" id="cloudCode" readonly value="${escapeHtml(cloud.bucket)}" />
+          <button class="btn" id="cloudCopy" type="button">Copy code</button>
+          <button class="btn" id="cloudSync" type="button">Sync now</button>
+        `;
+      } else {
+        bar.innerHTML = `
+          <input class="email" id="cloudEmail" type="email" placeholder="Email to start cloud log" />
+          <button class="btn primary" id="cloudStart" type="button">Start cloud</button>
+          <input class="code" id="cloudPaste" placeholder="Paste sync code" />
+          <button class="btn" id="cloudConnect" type="button">Connect</button>
+          <span class="cloud-status" id="cloudStatus"></span>
+        `;
+      }
+    }
+
     function render() {
       renderTabs();
+      renderCloud();
       const main = document.getElementById("main");
       if (state.active === "progress") {
         main.innerHTML = renderProgress();
@@ -588,7 +731,6 @@
           main.innerHTML = renderWorkout(state.workouts[idx], idx);
         }
       }
-      saveState();
     }
 
     function currentWorkout() {
@@ -778,6 +920,41 @@
       ok.onclick = () => { cleanup(); onOk(); };
       cancel.onclick = cleanup;
       dlg.showModal();
+    }
+
+    document.getElementById("cloudBar").addEventListener("click", async (e) => {
+      try {
+        if (e.target.id === "cloudStart") {
+          const email = document.getElementById("cloudEmail").value.trim();
+          if (!email.includes("@")) { setCloudStatus("Enter a real email", "bad"); return; }
+          await startCloud(email);
+        }
+        if (e.target.id === "cloudConnect") {
+          await connectCloud(document.getElementById("cloudPaste").value);
+        }
+        if (e.target.id === "cloudCopy") {
+          await navigator.clipboard.writeText(cloud.bucket);
+          toast("Sync code copied");
+        }
+        if (e.target.id === "cloudSync") {
+          if (dirty) await pushCloud();
+          else await pullCloud(true);
+        }
+      } catch (err) {
+        setCloudStatus(err.message || "Cloud error", "bad");
+      }
+    });
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") pullCloud(false).catch(() => {});
+    });
+    setInterval(() => pullCloud(false).catch(() => {}), 12000);
+
+    const hashCode = location.hash.replace(/^#/, "");
+    if (hashCode && !cloud.bucket) cloud = { bucket: hashCode };
+    if (cloud.bucket) {
+      saveCloudMeta();
+      pullCloud(true).catch(err => setCloudStatus(err.message || "Could not reach cloud", "bad"));
     }
 
     render();
