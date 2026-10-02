@@ -103,6 +103,9 @@
       width: 100%; min-height: 72px; background: var(--input); color: var(--text);
       border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 12px;
     }
+    .more { display: none; margin: 0 0 10px; padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: #1a1612; }
+    .more.open { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .sync-pill { color: var(--good); font-size: .72rem; }
     .tab {
       flex: none;
       border: 1px solid var(--line);
@@ -275,20 +278,24 @@
         <div class="mark">2H</div>
         <div>
           <h1>2H Level 1 Tracker</h1>
-          <div class="sub">Progress rollup + expandable workout sheets. Formulas stay live.</div>
+          <div class="sync-pill" id="syncPill"></div>
         </div>
       </div>
       <div class="actions">
-        <button class="btn" id="btnExport" type="button">Export backup</button>
-        <button class="btn" id="btnImport" type="button">Import</button>
+        <button class="btn" id="btnMore" type="button">More</button>
         <button class="btn primary" id="btnAdd" type="button">+ New workout</button>
       </div>
     </header>
 
     <nav class="tabs" id="tabs"></nav>
     <section class="cloud" id="cloudBar"></section>
+    <div class="more" id="morePanel">
+      <button class="btn" id="btnExport" type="button">Export backup</button>
+      <button class="btn" id="btnImport" type="button">Import</button>
+      <button class="btn" id="cloudSync" type="button">Sync now</button>
+      <span class="save-note">Firebase holds the log. The sync code stays private.</span>
+    </div>
     <main id="main"></main>
-    <p class="save-note"><span class="status-dot"></span>Firebase holds the log. The sync code is the password — don’t post it. The Firebase config can live in the page.</p>
   </div>
 
   <div class="toast" id="toast"></div>
@@ -395,9 +402,12 @@
     }
     function setCloudStatus(msg, kind) {
       const el = document.getElementById("cloudStatus");
-      if (!el) return;
-      el.textContent = msg;
-      el.className = "cloud-status" + (kind ? " " + kind : "");
+      if (el) {
+        el.textContent = msg;
+        el.className = "cloud-status" + (kind ? " " + kind : "");
+      }
+      const pill = document.getElementById("syncPill");
+      if (pill && cloud.code) pill.textContent = kind === "bad" ? "Not saved" : (msg === "Saving…" ? "Saving" : "Saved");
     }
 
     function saveState() {
@@ -566,9 +576,15 @@
       return (ratio * 100).toFixed(2) + "%";
     }
 
-    function fmtX(ratio) {
-      if (ratio == null) return "";
-      return ratio.toFixed(2) + "x";
+    function todayYYMMDD() {
+      const d = new Date();
+      return String(d.getFullYear()).slice(2) + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
+    }
+
+    function fmtChange(ratio) {
+      if (ratio == null) return "—";
+      const pct = (ratio - 1) * 100;
+      return (pct > 0 ? "+" : "") + pct.toFixed(1) + "%";
     }
 
     function toast(msg) {
@@ -607,45 +623,49 @@
 
     function renderProgress() {
       const rows = progressRows();
-      const latest = rows[rows.length - 1];
+      const works = rows.map(r => r.stats.work);
+      const best = works.length ? Math.max(...works) : 0;
+      const avg = works.length ? Math.round(works.reduce((s, n) => s + n, 0) / works.length) : 0;
+      const last = rows[rows.length - 1];
       return `
         <section class="card">
           <div class="card-head">
             <h2>Progress</h2>
-            <div class="muted">Work = Total Reps × Weight · Progress = this Work ÷ previous Work</div>
+            <div class="muted">${rows.length} sessions · best ${fmt(best)} · avg ${fmt(avg)}</div>
           </div>
+          <p class="hint">
+            Original formula stays: Progress = this Work ÷ previous Work.
+            Change is the gain or loss: last session ${last ? fmtChange(last.ratio) : "—"} versus the one before.
+            ${last ? `Latest ${fmt(last.stats.work)} from ${fmt(last.stats.totalReps)} reps at ${last.stats.weight || 0}.` : ""}
+          </p>
           <div class="progress-wrap">
             <table>
               <thead>
                 <tr>
                   <th class="ex">Workout</th>
-                  <th>Date</th>
                   <th>Level</th>
-                  <th>Weight</th>
+                  <th>Wt</th>
+                  <th>Reps</th>
                   <th>Work</th>
                   <th>Progress</th>
+                  <th>Change</th>
                 </tr>
               </thead>
               <tbody>
                 ${rows.map(r => `
                   <tr>
                     <td class="ex"><button class="btn ghost" data-open="${r.workout.id}" type="button">${escapeHtml(workoutLabel(r.workout))}</button></td>
-                    <td>${escapeHtml(r.workout.date || "—")}</td>
                     <td>${escapeHtml(r.workout.level === "" || r.workout.level == null ? "—" : r.workout.level)}</td>
                     <td>${escapeHtml(r.workout.weight === "" || r.workout.weight == null ? "—" : r.workout.weight)}</td>
+                    <td>${fmt(r.stats.totalReps)}</td>
                     <td class="computed">${fmt(r.stats.work)}</td>
-                    <td class="${r.ratio == null ? "muted" : r.ratio >= 1 ? "up" : "down"}">
-                      ${fmtPct(r.ratio)}${r.ratio == null ? "" : " <span class='muted'>(" + fmtX(r.ratio) + ")</span>"}
-                    </td>
+                    <td class="${r.ratio == null ? "muted" : r.ratio >= 1 ? "up" : "down"}">${fmtPct(r.ratio)}</td>
+                    <td class="${r.ratio == null ? "muted" : r.ratio >= 1 ? "up" : "down"}">${fmtChange(r.ratio)}</td>
                   </tr>
                 `).join("")}
               </tbody>
             </table>
           </div>
-          <p class="hint">
-            ${latest ? `Latest work ${fmt(latest.stats.work)} from ${fmt(latest.stats.totalReps)} reps at ${latest.stats.weight || 0}.` : "Add a workout to start tracking."}
-            Same formulas as the spreadsheet: Sheet totals feed this page automatically.
-          </p>
         </section>
       `;
     }
@@ -703,10 +723,10 @@
                 ${w.exercises.map((ex, i) => `
                   <tr data-ex="${i}">
                     <td class="ex"><input class="ex-name" data-exk="name" value="${escapeHtml(ex.name)}" /></td>
-                    <td class="round"><input class="cell-input" type="text" inputmode="numeric" maxlength="3" data-exk="r1" value="${ex.r1}" /></td>
-                    <td class="round"><input class="cell-input" type="text" inputmode="numeric" maxlength="3" data-exk="r2" value="${ex.r2}" /></td>
-                    <td class="round"><input class="cell-input" type="text" inputmode="numeric" maxlength="3" data-exk="r3" value="${ex.r3}" /></td>
-                    <td class="round"><input class="cell-input" type="text" inputmode="numeric" maxlength="3" data-exk="r4" value="${ex.r4}" /></td>
+                    <td class="round"><input class="cell-input" type="text" inputmode="numeric" maxlength="2" placeholder="" data-exk="r1" value="${ex.r1 === 0 ? "" : escapeHtml(ex.r1)}" /></td>
+                    <td class="round"><input class="cell-input" type="text" inputmode="numeric" maxlength="2" data-exk="r2" value="${ex.r2 === 0 ? "" : escapeHtml(ex.r2)}" /></td>
+                    <td class="round"><input class="cell-input" type="text" inputmode="numeric" maxlength="2" data-exk="r3" value="${ex.r3 === 0 ? "" : escapeHtml(ex.r3)}" /></td>
+                    <td class="round"><input class="cell-input" type="text" inputmode="numeric" maxlength="2" data-exk="r4" value="${ex.r4 === 0 ? "" : escapeHtml(ex.r4)}" /></td>
                     <td class="tot computed">${fmt(rowTotal(ex))}</td>
                     <td><button class="icon-btn" data-del-ex title="Remove exercise" type="button">×</button></td>
                   </tr>
@@ -730,10 +750,9 @@
             </table>
           </div>
           <div class="workout-tools">
-            <button class="btn" data-add-ex type="button">+ Add exercise</button>
-            <span class="muted" style="align-self:center">
-              Progress vs previous: <strong class="${ratio == null ? "" : ratio >= 1 ? "up" : "down"}">${fmtPct(ratio)}</strong>
-              ${ratio == null ? "(first session)" : "(" + fmtX(ratio) + ")"}
+            <span class="muted" id="sessionChange">
+              Change vs previous: <strong class="${ratio == null ? "" : ratio >= 1 ? "up" : "down"}">${fmtChange(ratio)}</strong>
+              <span class="muted">${ratio == null ? "" : " · original " + fmtPct(ratio)}</span>
             </span>
           </div>
         </section>
@@ -747,13 +766,12 @@
       if (!force && bar.dataset.mode === mode) return;
       bar.dataset.mode = mode;
       if (mode === "on") {
-        bar.innerHTML = `
-          <span class="cloud-status ok" id="cloudStatus">Firebase on</span>
-          <input class="code" id="cloudCode" readonly value="${escapeHtml(cloud.code)}" />
-          <button class="btn" id="cloudCopy" type="button">Copy code</button>
-          <button class="btn" id="cloudSync" type="button">Sync now</button>
-        `;
+        bar.hidden = true;
+        bar.innerHTML = "";
+        const pill = document.getElementById("syncPill");
+        if (pill) pill.textContent = "Saved";
       } else {
+        bar.hidden = false;
         const cfg = cloud.config ? JSON.stringify(cloud.config, null, 2) : "";
         bar.innerHTML = `
           <textarea id="cloudConfig" placeholder="Paste firebaseConfig here">{${cfg ? "" : ""}}</textarea>
@@ -864,9 +882,10 @@
         if (exk === "name") {
           w.exercises[i][exk] = e.target.value;
         } else {
-          const val = e.target.value.replace(/[^\d]/g, "").slice(0, 3);
-          if (val !== e.target.value) e.target.value = val;
-          w.exercises[i][exk] = val === "" ? "" : Number(val);
+          const val = e.target.value.replace(/[^\d]/g, "").slice(0, 2);
+          const n = val === "" ? "" : Math.min(30, Number(val));
+          if (String(n) !== e.target.value) e.target.value = n;
+          w.exercises[i][exk] = n;
         }
         refreshComputed(w);
         saveState();
@@ -897,10 +916,12 @@
         work.children[1].textContent = `${fmt(stats.totalReps)} × ${stats.weight || 0}`;
         work.children[2].textContent = fmt(stats.work);
       }
-      const prog = document.querySelector(".workout-tools .muted strong");
+      const prog = document.querySelector("#sessionChange strong");
       if (prog) {
-        prog.textContent = fmtPct(ratio);
+        prog.textContent = fmtChange(ratio);
         prog.className = ratio == null ? "" : ratio >= 1 ? "up" : "down";
+        const extra = prog.nextElementSibling;
+        if (extra) extra.textContent = ratio == null ? "" : " · original " + fmtPct(ratio);
       }
     }
 
@@ -910,23 +931,27 @@
       const clone = last ? {
         id: uid(),
         name: "",
-        date: "",
+        date: todayYYMMDD(),
         level: last.level,
         weight: last.weight,
-        exercises: last.exercises.map(ex => ({ ...ex }))
+        exercises: last.exercises.map(ex => ({ name: ex.name, r1: "", r2: "", r3: "", r4: "" }))
       } : {
         id: uid(),
         name: "",
-        date: "",
+        date: todayYYMMDD(),
         level: 1,
         weight: 15,
-        exercises: blankExercises(20)
+        exercises: blankExercises("")
       };
       clone.name = workoutLabel(clone);
       state.workouts.push(clone);
       state.active = clone.id;
       render();
-      toast("New workout added — edit reps as you go");
+      toast("New workout ready — rounds are blank");
+    });
+
+    document.getElementById("btnMore").addEventListener("click", () => {
+      document.getElementById("morePanel").classList.toggle("open");
     });
 
     document.getElementById("btnExport").addEventListener("click", () => {
@@ -974,6 +999,17 @@
       dlg.showModal();
     }
 
+    document.getElementById("morePanel").addEventListener("click", async (e) => {
+      if (e.target.id !== "cloudSync") return;
+      try {
+        if (dirty) await pushCloud();
+        else await pullCloud(true);
+        toast("Synced");
+      } catch (err) {
+        setCloudStatus(err.message || "Cloud error", "bad");
+      }
+    });
+
     document.getElementById("cloudBar").addEventListener("click", async (e) => {
       try {
         if (e.target.id === "cloudSaveCfg") {
@@ -985,10 +1021,6 @@
         if (e.target.id === "cloudCopy") {
           await navigator.clipboard.writeText(cloud.code);
           toast("Sync code copied");
-        }
-        if (e.target.id === "cloudSync") {
-          if (dirty) await pushCloud();
-          else await pullCloud(true);
         }
       } catch (err) {
         setCloudStatus(err.message || "Cloud error", "bad");
