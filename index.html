@@ -375,8 +375,12 @@
     let pushTimer = null;
 
     function loadCloud() {
-      try { return JSON.parse(localStorage.getItem(CLOUD_KEY)) || {}; }
-      catch { return {}; }
+      try {
+        const saved = JSON.parse(localStorage.getItem(CLOUD_KEY)) || {};
+        if (!saved.config) saved.config = DEFAULT_FIREBASE_CONFIG;
+        return saved;
+      }
+      catch { return { config: DEFAULT_FIREBASE_CONFIG }; }
     }
     function saveCloudMeta() {
       localStorage.setItem(CLOUD_KEY, JSON.stringify(cloud));
