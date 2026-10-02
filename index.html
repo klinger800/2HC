@@ -99,7 +99,10 @@
     .cloud input.email { width: min(100%, 16rem); }
     .cloud-status { color: var(--muted); font-size: .75rem; }
     .cloud-status.ok { color: var(--good); }
-    .cloud-status.bad { color: var(--bad); }
+    .cloud textarea {
+      width: 100%; min-height: 72px; background: var(--input); color: var(--text);
+      border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 12px;
+    }
     .tab {
       flex: none;
       border: 1px solid var(--line);
@@ -285,7 +288,7 @@
     <nav class="tabs" id="tabs"></nav>
     <section class="cloud" id="cloudBar"></section>
     <main id="main"></main>
-    <p class="save-note"><span class="status-dot"></span>Cloud saves the log for every device that has the sync code. The code is the password — don’t post it publicly.</p>
+    <p class="save-note"><span class="status-dot"></span>Firebase holds the log. The sync code is the password — don’t post it. The Firebase config can live in the page.</p>
   </div>
 
   <div class="toast" id="toast"></div>
@@ -304,8 +307,7 @@
 
   <script>
     const STORAGE_KEY = "twohand-lvl1-tracker-v1";
-    const CLOUD_KEY = "twohand-lvl1-cloud-v1";
-    const CLOUD_BASE = "https://kvdb.io";
+    const CLOUD_KEY = "twohand-lvl1-firebase-v1";
     const DEFAULT_EXERCISES = [
       "Balance Squat",
       "Side-to-Side Swing",
@@ -388,7 +390,7 @@
 
     function saveState() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      if (!applyingRemote && cloud.bucket) {
+      if (!applyingRemote && cloud.code && cloud.config) {
         dirty = true;
         clearTimeout(pushTimer);
         pushTimer = setTimeout(() => pushCloud().catch(err => setCloudStatus(err.message || "Cloud save failed", "bad")), 700);
@@ -398,26 +400,36 @@
     function cloudPayload() {
       return {
         updatedAt: new Date().toISOString(),
-        title: state.title,
-        active: state.active,
+        title: state.title || "2H Level 1",
+        active: state.active || "progress",
         workouts: state.workouts
       };
     }
 
+    let firebaseLibs = null;
+    async function firebaseDb() {
+      if (!cloud.config || !cloud.config.apiKey || !cloud.config.projectId) {
+        throw new Error("Paste the Firebase config first");
+      }
+      if (!firebaseLibs) {
+        const appMod = await import("https://www.gstatic.com/firebasejs/11.6.0/firebase-app.js");
+        const fsMod = await import("https://www.gstatic.com/firebasejs/11.6.0/firebase-firestore.js");
+        const app = appMod.initializeApp(cloud.config, "twohand");
+        firebaseLibs = { db: fsMod.getFirestore(app), doc: fsMod.doc, getDoc: fsMod.getDoc, setDoc: fsMod.setDoc };
+      }
+      return firebaseLibs;
+    }
+
     async function pushCloud() {
-      if (!cloud.bucket) return;
+      if (!cloud.code) return;
       setCloudStatus("Saving…");
       const data = cloudPayload();
-      const res = await fetch(CLOUD_BASE + "/" + cloud.bucket + "/log", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data)
-      });
-      if (!res.ok) throw new Error((await res.text()) || "Cloud save failed");
+      const { db, doc, setDoc } = await firebaseDb();
+      await setDoc(doc(db, "logs", cloud.code), data);
       state.updatedAt = data.updatedAt;
       dirty = false;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      setCloudStatus("Saved to cloud", "ok");
+      setCloudStatus("Saved to Firebase", "ok");
     }
 
     function applyRemote(data) {
@@ -438,46 +450,63 @@
     }
 
     async function pullCloud(force) {
-      if (!cloud.bucket || applyingRemote) return;
+      if (!cloud.code || !cloud.config || applyingRemote) return;
       if (!force && dirty) return;
       if (!force && document.activeElement && document.activeElement.closest("main, .meta, table")) return;
-      const res = await fetch(CLOUD_BASE + "/" + cloud.bucket + "/log");
-      if (res.status === 404) return;
-      if (!res.ok) throw new Error((await res.text()) || "Cloud read failed");
-      const data = await res.json();
+      const { db, doc, getDoc } = await firebaseDb();
+      const snap = await getDoc(doc(db, "logs", cloud.code));
+      if (!snap.exists()) return;
+      const data = snap.data();
       if (!force && state.updatedAt && data.updatedAt && data.updatedAt <= state.updatedAt) return;
-      if (applyRemote(data)) setCloudStatus("Updated from cloud", "ok");
+      if (applyRemote(data)) setCloudStatus("Updated from Firebase", "ok");
     }
 
-    async function startCloud(email) {
-      setCloudStatus("Creating cloud log…");
-      const secret = uid() + uid();
-      const body = new URLSearchParams({ email, default_ttl: "315360000", secret_key: secret });
-      const res = await fetch(CLOUD_BASE, { method: "POST", body });
-      const text = (await res.text()).trim();
-      if (!res.ok || text.length < 8 || text.includes(" ")) throw new Error(text || "Could not create cloud log");
-      cloud = { bucket: text, email, secret };
+    function parseConfig(raw) {
+      const text = String(raw || "").trim();
+      const start = text.indexOf("{");
+      const end = text.lastIndexOf("}");
+      if (start < 0 || end < start) throw new Error("Paste the firebaseConfig block");
+      const obj = JSON.parse(text.slice(start, end + 1).replace(/,(\s*[}\]])/g, "$1"));
+      if (!obj.apiKey || !obj.projectId) throw new Error("Config needs apiKey and projectId");
+      return obj;
+    }
+
+    function saveConfigFromBox() {
+      const box = document.getElementById("cloudConfig");
+      if (!box) return cloud.config;
+      cloud.config = parseConfig(box.value);
+      firebaseLibs = null;
       saveCloudMeta();
-      if (location.hash !== "#" + text) history.replaceState(null, "", "#" + text);
+      return cloud.config;
+    }
+
+    async function startCloud() {
+      saveConfigFromBox();
+      setCloudStatus("Creating Firebase log…");
+      const code = (uid() + uid()).slice(0, 20);
+      cloud.code = code;
+      saveCloudMeta();
+      if (location.hash !== "#" + code) history.replaceState(null, "", "#" + code);
       await pushCloud();
-      renderCloud();
-      toast("Cloud log created");
+      renderCloud(true);
+      toast("Firebase log created");
     }
 
     async function connectCloud(code) {
-      const bucket = String(code || "").trim().replace(/^#/, "");
-      if (!bucket) return;
+      saveConfigFromBox();
+      const id = String(code || "").trim().replace(/^#/, "");
+      if (!id) throw new Error("Paste the sync code");
       setCloudStatus("Connecting…");
-      const res = await fetch(CLOUD_BASE + "/" + bucket + "/log");
-      if (res.status === 404) throw new Error("No log on that code yet");
-      if (!res.ok) throw new Error((await res.text()) || "Could not connect");
-      const data = await res.json();
-      cloud = { bucket };
+      cloud.code = id;
       saveCloudMeta();
-      if (location.hash !== "#" + bucket) history.replaceState(null, "", "#" + bucket);
-      applyRemote(data);
+      const { db, doc, getDoc } = await firebaseDb();
+      const snap = await getDoc(doc(db, "logs", id));
+      if (!snap.exists()) throw new Error("No log on that code yet");
+      if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
+      applyRemote(snap.data());
+      renderCloud(true);
       setCloudStatus("Connected", "ok");
-      toast("Connected to cloud log");
+      toast("Connected to Firebase");
     }
 
     function num(v) {
@@ -695,24 +724,31 @@
       `;
     }
 
-    function renderCloud() {
+    function renderCloud(force) {
       const bar = document.getElementById("cloudBar");
       if (!bar) return;
-      if (cloud.bucket) {
+      const mode = cloud.code && cloud.config ? "on" : "setup";
+      if (!force && bar.dataset.mode === mode) return;
+      bar.dataset.mode = mode;
+      if (mode === "on") {
         bar.innerHTML = `
-          <span class="cloud-status ok" id="cloudStatus">Cloud on</span>
-          <input class="code" id="cloudCode" readonly value="${escapeHtml(cloud.bucket)}" />
+          <span class="cloud-status ok" id="cloudStatus">Firebase on</span>
+          <input class="code" id="cloudCode" readonly value="${escapeHtml(cloud.code)}" />
           <button class="btn" id="cloudCopy" type="button">Copy code</button>
           <button class="btn" id="cloudSync" type="button">Sync now</button>
         `;
       } else {
+        const cfg = cloud.config ? JSON.stringify(cloud.config, null, 2) : "";
         bar.innerHTML = `
-          <input class="email" id="cloudEmail" type="email" placeholder="Email to start cloud log" />
+          <textarea id="cloudConfig" placeholder="Paste firebaseConfig here">{${cfg ? "" : ""}}</textarea>
+          <button class="btn" id="cloudSaveCfg" type="button">Save config</button>
           <button class="btn primary" id="cloudStart" type="button">Start cloud</button>
           <input class="code" id="cloudPaste" placeholder="Paste sync code" />
           <button class="btn" id="cloudConnect" type="button">Connect</button>
           <span class="cloud-status" id="cloudStatus"></span>
         `;
+        const box = document.getElementById("cloudConfig");
+        if (cfg) box.value = cfg;
       }
     }
 
@@ -924,16 +960,14 @@
 
     document.getElementById("cloudBar").addEventListener("click", async (e) => {
       try {
-        if (e.target.id === "cloudStart") {
-          const email = document.getElementById("cloudEmail").value.trim();
-          if (!email.includes("@")) { setCloudStatus("Enter a real email", "bad"); return; }
-          await startCloud(email);
+        if (e.target.id === "cloudSaveCfg") {
+          saveConfigFromBox();
+          setCloudStatus("Config saved on this device", "ok");
         }
-        if (e.target.id === "cloudConnect") {
-          await connectCloud(document.getElementById("cloudPaste").value);
-        }
+        if (e.target.id === "cloudStart") await startCloud();
+        if (e.target.id === "cloudConnect") await connectCloud(document.getElementById("cloudPaste").value);
         if (e.target.id === "cloudCopy") {
-          await navigator.clipboard.writeText(cloud.bucket);
+          await navigator.clipboard.writeText(cloud.code);
           toast("Sync code copied");
         }
         if (e.target.id === "cloudSync") {
@@ -951,10 +985,10 @@
     setInterval(() => pullCloud(false).catch(() => {}), 12000);
 
     const hashCode = location.hash.replace(/^#/, "");
-    if (hashCode && !cloud.bucket) cloud = { bucket: hashCode };
-    if (cloud.bucket) {
+    if (hashCode && cloud.config && !cloud.code) cloud.code = hashCode;
+    if (cloud.code && cloud.config) {
       saveCloudMeta();
-      pullCloud(true).catch(err => setCloudStatus(err.message || "Could not reach cloud", "bad"));
+      pullCloud(true).catch(err => setCloudStatus(err.message || "Could not reach Firebase", "bad"));
     }
 
     render();
