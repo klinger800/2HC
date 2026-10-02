@@ -308,6 +308,14 @@
   <script>
     const STORAGE_KEY = "twohand-lvl1-tracker-v1";
     const CLOUD_KEY = "twohand-lvl1-firebase-v1";
+    const DEFAULT_FIREBASE_CONFIG = {
+      apiKey: "AIzaSyC9PJCX2EAfjB1WxUyzGqLgVFYVZ99nYZE",
+      authDomain: "h-heavy-club.firebaseapp.com",
+      projectId: "h-heavy-club",
+      storageBucket: "h-heavy-club.firebasestorage.app",
+      messagingSenderId: "1089575562611",
+      appId: "1:1089575562611:web:8eb2bb36ef759dc340a906"
+    };
     const DEFAULT_EXERCISES = [
       "Balance Squat",
       "Side-to-Side Swing",
@@ -477,7 +485,11 @@
 
     function saveConfigFromBox() {
       const box = document.getElementById("cloudConfig");
-      if (!box) return cloud.config;
+      if (!box || !box.value.trim()) {
+        cloud.config = cloud.config || DEFAULT_FIREBASE_CONFIG;
+        saveCloudMeta();
+        return cloud.config;
+      }
       cloud.config = parseConfig(box.value);
       firebaseLibs = null;
       saveCloudMeta();
