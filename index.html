@@ -634,8 +634,7 @@
             <div class="muted">${rows.length} sessions · best ${fmt(best)} · avg ${fmt(avg)}</div>
           </div>
           <p class="hint">
-            Original formula stays: Progress = this Work ÷ previous Work.
-            Change is the gain or loss: last session ${last ? fmtChange(last.ratio) : "—"} versus the one before.
+            Original formula stays behind the scenes: Change = this Work ÷ previous Work, shown as the gain or loss.
             ${last ? `Latest ${fmt(last.stats.work)} from ${fmt(last.stats.totalReps)} reps at ${last.stats.weight || 0}.` : ""}
           </p>
           <div class="progress-wrap">
@@ -647,7 +646,6 @@
                   <th>Wt</th>
                   <th>Reps</th>
                   <th>Work</th>
-                  <th>Progress</th>
                   <th>Change</th>
                 </tr>
               </thead>
@@ -659,7 +657,6 @@
                     <td>${escapeHtml(r.workout.weight === "" || r.workout.weight == null ? "—" : r.workout.weight)}</td>
                     <td>${fmt(r.stats.totalReps)}</td>
                     <td class="computed">${fmt(r.stats.work)}</td>
-                    <td class="${r.ratio == null ? "muted" : r.ratio >= 1 ? "up" : "down"}">${fmtPct(r.ratio)}</td>
                     <td class="${r.ratio == null ? "muted" : r.ratio >= 1 ? "up" : "down"}">${fmtChange(r.ratio)}</td>
                   </tr>
                 `).join("")}
@@ -752,7 +749,6 @@
           <div class="workout-tools">
             <span class="muted" id="sessionChange">
               Change vs previous: <strong class="${ratio == null ? "" : ratio >= 1 ? "up" : "down"}">${fmtChange(ratio)}</strong>
-              <span class="muted">${ratio == null ? "" : " · original " + fmtPct(ratio)}</span>
             </span>
           </div>
         </section>
@@ -920,8 +916,6 @@
       if (prog) {
         prog.textContent = fmtChange(ratio);
         prog.className = ratio == null ? "" : ratio >= 1 ? "up" : "down";
-        const extra = prog.nextElementSibling;
-        if (extra) extra.textContent = ratio == null ? "" : " · original " + fmtPct(ratio);
       }
     }
 
